@@ -4,7 +4,7 @@ Device database backed by the IPSW.me v4 API with local disk cache.
 Provides:
   - Device identifier → CPID / BDID / boardconfig
   - Board config → device identifier
-  - Nonce type per CPID (none / sha1 / sha384)
+  - Nonce type per CPID (none / sha1 / sha256 / sha384)
   - Static baseband table (BBGCID + SNUM length)
 """
 
@@ -23,16 +23,20 @@ CACHE_TTL = 86400 * 7  # 7 days
 # ---------------------------------------------------------------------------
 # Nonce type mapping by Apple chip ID (CPID)
 # ---------------------------------------------------------------------------
-NONCE_NONE  = "none"
+NONCE_NONE   = "none"
 NONCE_SHA1   = "sha1"    # 20 bytes  – A5..A9 / some older chips
-NONCE_SHA384 = "sha384"  # 48 bytes  – A10+ (0x8010 and up)
+NONCE_SHA256 = "sha256"  # 32 bytes  – A17 Pro+ (0x8130 and up)
+NONCE_SHA384 = "sha384"  # 48 bytes  – A10..A16 (0x8010..0x8120)
 
 _CPID_NO_NONCE: set = {0x8900, 0x8720}
 _CPID_SHA1: set = {
     0x8920, 0x8922, 0x8930, 0x8940, 0x8942, 0x8945, 0x8947,
     0x8950, 0x8955, 0x8960, 0x7000, 0x7001, 0x7002, 0x8000, 0x8003,
 }
-# Everything else (0x8010, 0x8011, 0x8015, 0x8020, 0x8027, 0x8030, …) → sha384
+# A17 Pro (0x8130), A18 Pro (0x8140), A19 Pro (0x8150) — confirmed 32-byte nonces
+# from real irecovery output: NONC is 64 hex chars = 32 bytes on these chips.
+_CPID_SHA256: set = {0x8130, 0x8140, 0x8150}
+# Everything else (0x8010..0x8120) → sha384
 
 # IMG3 chips: pre-A7 (A4, A5, A5X, A6, A6X and older)
 # IMG4 chips: A7 (0x8960) and everything newer
@@ -157,6 +161,8 @@ def nonce_type(cpid: int) -> str:
         return NONCE_NONE
     if cpid in _CPID_SHA1:
         return NONCE_SHA1
+    if cpid in _CPID_SHA256:
+        return NONCE_SHA256
     return NONCE_SHA384
 
 

@@ -60,6 +60,8 @@ def random_nonce(nonce_type: str) -> bytes:
     """Generate a random nonce of the correct length for signing-status checks."""
     if nonce_type == "sha1":
         return secrets.token_bytes(20)
+    if nonce_type == "sha256":
+        return secrets.token_bytes(32)
     if nonce_type == "sha384":
         return secrets.token_bytes(48)
     return b""  # NONCE_NONE
@@ -85,6 +87,8 @@ def generator_to_nonce(generator_hex: str, nonce_type: str) -> bytes:
     gen_bytes = parse_hex_bytes(generator_hex)
     if nonce_type == "sha1":
         return hashlib.sha1(gen_bytes).digest()   # 20 bytes
+    if nonce_type == "sha256":
+        return hashlib.sha256(gen_bytes).digest() # 32 bytes
     if nonce_type == "sha384":
         return hashlib.sha384(gen_bytes).digest() # 48 bytes
     return b""
