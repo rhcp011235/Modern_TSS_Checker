@@ -146,13 +146,16 @@ python tsschecker.py -d iPhone14,2 -i 26.3 \
 ## Examples
 
 ```
-# Check if a beta version is being signed (searches IPSW + OTA lists)
+# Check if a beta version is being signed (searches appledb.dev automatically)
 python tsschecker.py -d iPhone14,2 -i 18.4 --beta
+
+# Check a specific beta build by build ID
+python tsschecker.py -d iPhone18,2 -Z 23E5207q --beta
 
 # List all versions including betas
 python tsschecker.py -d iPhone14,2 --list-versions --beta
 
-# Use a direct IPSW/OTA URL (useful for betas not yet indexed by IPSW.me)
+# Use a direct IPSW/OTA URL (useful when you already have the URL)
 python tsschecker.py -d iPhone14,2 --url https://updates.cdn-apple.com/...
 
 # Check multiple versions for a device
@@ -313,6 +316,7 @@ lib/
   ipsw.py            IPSW.me firmware API + FragmentZip implementation
   manifest.py        BuildManifest.plist parser and component extractor
   tss.py             TSS client (request builder, sender, response parser)
+  appledb.py         AppleDB API for beta firmware lookup (appledb.dev)
 ```
 
 ---
