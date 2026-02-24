@@ -231,15 +231,30 @@ class TSSRequest:
     # Sending
     # -----------------------------------------------------------------------
 
-    def send(self, verbose: bool = False) -> Tuple[bool, str]:
+    def send(
+        self,
+        verbose: bool = False,
+        treat_69_as_signed: bool = False,
+    ) -> Tuple[bool, str]:
         """
         Send the TSS request to Apple's servers.
 
         Returns:
             (signed: bool, response_body: str)
 
-        signed=True  → firmware IS still being signed (STATUS=0)
-        signed=False → firmware is NOT signed, or an error occurred
+        signed=True  → STATUS=0 (ticket issued), or STATUS=69 when
+                        treat_69_as_signed=True (see below)
+        signed=False → STATUS=94 (firmware not being signed), or error
+
+        treat_69_as_signed:
+            For devices with RestoreAttestationMode >= 4 (A17 Pro+), Apple's
+            TSS server cannot issue a ticket without a hardware-generated SE
+            attestation bundle, so it returns STATUS=69 even for signed
+            firmware.  When treat_69_as_signed=True, STATUS=69 is interpreted
+            as "signed" — Apple confirmed it would issue a ticket if the
+            attestation were present.  STATUS=94 still means unsigned.
+            Do NOT set this flag when saving blobs (a ticket is actually
+            required then, not just a status check).
         """
         payload = self.build_xml()
 
@@ -263,7 +278,8 @@ class TSSRequest:
                 status_code, message = _parse_tss_response(body)
                 if verbose:
                     print(f"[TSS] STATUS={status_code} MESSAGE={message}")
-                return status_code == 0, body
+                signed = status_code == 0 or (treat_69_as_signed and status_code == 69)
+                return signed, body
             except requests.RequestException as exc:
                 if verbose:
                     print(f"[TSS] Request failed ({exc}), retrying…")
