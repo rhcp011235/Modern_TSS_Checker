@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib64/
+*.so
+
+# Virtual environments
+venv/
+env/
+.env
+.venv
+ENV/
+
+# Device/firmware cache (populated at runtime by IPSW.me API calls)
+~/.cache/tsschecker/
+
+# SHSH2 blobs saved locally (user data, not source)
+*.shsh2
+blobs/
+
+# Test/scratch files
+*.plist
+BuildManifest.plist
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Claude Code project files
+.claude/
