@@ -27,6 +27,7 @@ from lib import devices as devdb
 from lib import ipsw as ipswapi
 from lib import manifest as mf
 from lib import tss as tsslib
+from lib import appledb as appledbapi
 
 
 # ---------------------------------------------------------------------------
@@ -275,14 +276,14 @@ def do_check(args, device, firmware_url: str, fw_version: str, fw_buildid: str,
             if fw_signed is not None:
                 if args.verbose:
                     print(
-                        f"[i] RestoreAttestationMode={attest_mode}: this chip requires "
-                        f"hardware attestation for TSS (A17 Pro / 0x8130+). "
-                        f"Using IPSW.me signing status."
+                        f"[i] RestoreAttestationMode={attest_mode}: this firmware requires "
+                        f"hardware attestation for direct TSS. "
+                        f"Using cached signing status."
                     )
                 else:
                     print(
-                        f"[i] Device uses hardware attestation (A17 Pro+); "
-                        f"using IPSW.me signing status."
+                        f"[i] Firmware requires hardware attestation; "
+                        f"using cached signing status."
                     )
                 return fw_signed
             else:
@@ -599,33 +600,98 @@ def main() -> int:
             )
 
         if fw is None:
-            hint = " (try --url <ipsw_url> if this is a beta not yet in IPSW.me)" if args.beta else \
-                   " (try --beta if this is a beta firmware, or --url <ipsw_url> for direct URL)"
-            print(
-                f"[ERROR] Firmware not found for {identifier} "
-                f"version={args.ios or ''} build={args.buildid or ''}{hint}",
-                file=sys.stderr,
-            )
-            return 1
+            if not args.beta:
+                print(
+                    f"[ERROR] Firmware not found for {identifier} "
+                    f"version={args.ios or ''} build={args.buildid or ''} "
+                    f"(try --beta for beta firmware, or --url <url> for a direct download URL)",
+                    file=sys.stderr,
+                )
+                return 1
 
-        fw_version      = fw.version
-        fw_buildid      = fw.buildid
-        firmware_url    = fw.url
-        fw_signed_ipsw  = fw.signed  # capture IPSW.me signing status for fallback
+            # --beta: IPSW.me doesn't have this build — try appledb.dev
+            if args.verbose:
+                print("[i] Not found in IPSW.me, searching appledb.dev for beta…")
+            else:
+                print("[i] Searching appledb.dev for beta firmware…")
 
-        print(f"[i] Firmware: {fw_version} ({fw_buildid}) for {identifier} ({device.name})")
+            try:
+                if args.buildid:
+                    afw = appledbapi.get_firmware_by_buildid(args.buildid, identifier)
+                elif args.ios:
+                    afw = appledbapi.get_latest_build(args.ios, identifier)
+                else:
+                    afw = None
+            except Exception as exc:
+                print(f"[ERROR] appledb.dev lookup failed: {exc}", file=sys.stderr)
+                return 1
 
-        if args.verbose:
-            print(f"[i] Downloading BuildManifest from {firmware_url}…")
+            if afw is None:
+                print(
+                    f"[ERROR] Firmware not found in IPSW.me or appledb.dev: "
+                    f"version={args.ios or ''} build={args.buildid or ''}. "
+                    f"Use --url <url> to provide a direct download URL.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            fw_version     = afw.version
+            fw_buildid     = afw.buildid
+            fw_signed_ipsw = afw.signed
+            beta_note      = " [beta]" if afw.beta else ""
+
+            print(f"[i] Firmware: {fw_version} ({fw_buildid}){beta_note} "
+                  f"for {identifier} ({device.name}) [appledb.dev]")
+
+            if afw.url_type == "ipsw":
+                # Regular IPSW — can download BuildManifest and do a real TSS check
+                firmware_url = afw.url
+                if args.verbose:
+                    print(f"[i] IPSW source found, fetching BuildManifest…")
+                else:
+                    print(f"[i] Fetching BuildManifest from beta IPSW…")
+                try:
+                    raw_manifest = ipswapi.download_build_manifest(firmware_url)
+                    manifest_data = plistlib.loads(raw_manifest)
+                except Exception as exc:
+                    print(f"[ERROR] Could not fetch BuildManifest: {exc}", file=sys.stderr)
+                    return 1
+            else:
+                # OTA-only build (.aea encrypted) — BuildManifest is inaccessible
+                # Fall back to appledb.dev signing status as the oracle
+                print(
+                    f"[i] OTA-only{beta_note}: AEA-encrypted OTA, BuildManifest not accessible. "
+                    f"Reporting appledb.dev signing status."
+                )
+                if args.verbose and afw.url:
+                    print(f"[i] OTA URL: {afw.url}")
+                signed = afw.signed
+                if signed:
+                    print(f"\n[+] {fw_version} ({fw_buildid}) IS being signed for {identifier} ✓")
+                else:
+                    print(f"\n[-] {fw_version} ({fw_buildid}) is NOT being signed for {identifier} ✗")
+                return 0 if signed else 1
+
         else:
-            print(f"[i] Fetching BuildManifest… (no full IPSW download)")
+            # Found in IPSW.me — download BuildManifest normally
+            fw_version     = fw.version
+            fw_buildid     = fw.buildid
+            firmware_url   = fw.url
+            fw_signed_ipsw = fw.signed
 
-        try:
-            raw_manifest = ipswapi.download_build_manifest(firmware_url)
-            manifest_data = plistlib.loads(raw_manifest)
-        except Exception as exc:
-            print(f"[ERROR] Could not fetch BuildManifest: {exc}", file=sys.stderr)
-            return 1
+            print(f"[i] Firmware: {fw_version} ({fw_buildid}) for {identifier} ({device.name})")
+
+            if args.verbose:
+                print(f"[i] Downloading BuildManifest from {firmware_url}…")
+            else:
+                print(f"[i] Fetching BuildManifest… (no full IPSW download)")
+
+            try:
+                raw_manifest = ipswapi.download_build_manifest(firmware_url)
+                manifest_data = plistlib.loads(raw_manifest)
+            except Exception as exc:
+                print(f"[ERROR] Could not fetch BuildManifest: {exc}", file=sys.stderr)
+                return 1
 
     # ------------------------------------------------------------------
     # Check signing status

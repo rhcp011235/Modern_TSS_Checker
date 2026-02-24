@@ -335,11 +335,14 @@ def get_restore_attestation_mode(identity: dict) -> int:
     """
     Return the RestoreAttestationMode from the identity's Info dict.
 
-    Known values:
-      2 — A15 Bionic (iPhone 13 series, 0x8110): anonymous TSS works
-      3 — A16 Bionic (iPhone 14 Pro, 0x8120): anonymous TSS works
-      4 — A17 Pro+ (iPhone 15 Pro+, 0x8130+): hardware attestation required;
-          anonymous TSS returns STATUS=69.  Must fall back to IPSW.me status.
+    Known values (firmware-dependent — newer iOS builds may raise the value):
+      2 — A15 Bionic (0x8110) in iOS 18.x: anonymous TSS works
+      3 — A16 Bionic (0x8120) in iOS 18.x: anonymous TSS works
+      4 — A17 Pro (0x8130) in iOS 18.x: hardware attestation required;
+          anonymous TSS returns STATUS=69.
+      6 — A15 Bionic (0x8110) in iOS 26.4+: hardware attestation required.
+      8 — A19 Pro (0x8150) in iOS 26.4+: hardware attestation required.
+      Any value >= 4: hardware attestation required; fall back to cached status.
     """
     info = identity.get("Info", {})
     return int(info.get("RestoreAttestationMode", 0))
