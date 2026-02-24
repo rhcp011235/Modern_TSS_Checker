@@ -87,7 +87,9 @@ NONCE NOTES:
     fw.add_argument("-o", "--ota",         action="store_true",
                     help="Check OTA signing instead of full restore (IPSW)")
     fw.add_argument("--beta",              action="store_true",
-                    help="Request ticket for beta firmware")
+                    help="Search OTA/beta firmware list (betas are often OTA-only)")
+    fw.add_argument("--url",              metavar="URL",
+                    help="Direct URL to an IPSW or OTA zip (skip IPSW.me firmware lookup)")
 
     # Security / nonces
     sec = p.add_argument_group("security / nonces")
@@ -421,7 +423,15 @@ def main() -> int:
             parser.error("-d / --device required for --list-versions / --list-builds")
         identifier = device.identifier
         try:
-            fws = ipswapi.get_firmwares(identifier, ota=args.ota)
+            use_ota = args.ota or args.beta
+            fws = ipswapi.get_firmwares(identifier, ota=use_ota)
+            # When --beta is set without --ota, merge both lists to show everything
+            if args.beta and not args.ota:
+                ota_fws = ipswapi.get_firmwares(identifier, ota=True)
+                seen_buildids = {f.buildid for f in fws}
+                for f in ota_fws:
+                    if f.buildid not in seen_buildids:
+                        fws.append(f)
         except Exception as exc:
             print(f"[ERROR] Could not fetch firmware list: {exc}", file=sys.stderr)
             return 1
@@ -430,7 +440,8 @@ def main() -> int:
             print(f"No firmware versions found for {identifier}")
             return 0
 
-        print(f"Firmware versions for {identifier} ({device.name}):")
+        list_type = "OTA/beta" if (args.ota or args.beta) else "IPSW"
+        print(f"Firmware versions for {identifier} ({device.name}) [{list_type}]:")
         print_versions(fws, show_builds=args.list_builds)
         return 0
 
@@ -506,6 +517,46 @@ def main() -> int:
         fw_version  = mf.get_product_version(manifest_data)
         fw_buildid  = mf.get_product_build_version(manifest_data)
 
+    elif args.url:
+        # Direct URL — skip IPSW.me firmware lookup, download manifest from URL
+        firmware_url = args.url
+        if args.verbose:
+            print(f"[i] Fetching BuildManifest from URL: {firmware_url}")
+        else:
+            print(f"[i] Fetching BuildManifest from provided URL…")
+        try:
+            raw_manifest = ipswapi.download_build_manifest(firmware_url)
+            manifest_data = plistlib.loads(raw_manifest)
+        except Exception as exc:
+            print(f"[ERROR] Could not fetch BuildManifest from URL: {exc}", file=sys.stderr)
+            return 1
+        fw_version = mf.get_product_version(manifest_data)
+        fw_buildid = mf.get_product_build_version(manifest_data)
+
+        # Still try IPSW.me for signing status (used as A17 Pro+ fallback)
+        if device and fw_version:
+            try:
+                fw_meta = ipswapi.get_firmware_by_version(
+                    device.identifier, fw_version, ota=args.ota
+                )
+                if fw_meta is None and args.beta:
+                    fw_meta = ipswapi.get_firmware_by_version(
+                        device.identifier, fw_version, ota=True
+                    )
+                if fw_meta is None:
+                    fw_meta = ipswapi.get_firmware_by_buildid(
+                        device.identifier, fw_buildid, ota=args.ota
+                    )
+                if fw_meta is not None:
+                    fw_signed_ipsw = fw_meta.signed
+                    if args.verbose:
+                        print(f"[i] IPSW.me signing status: {'signed' if fw_signed_ipsw else 'unsigned'}")
+            except Exception:
+                pass  # best-effort; no fallback signing status if IPSW.me is unavailable
+
+        if device:
+            print(f"[i] Firmware: {fw_version} ({fw_buildid}) for {device.identifier} ({device.name})")
+
     else:
         # Fetch from IPSW.me
         if not device:
@@ -515,28 +566,44 @@ def main() -> int:
         fw = None
         no_cache = (args.cache == 0)
 
+        # --beta implies searching OTA if not found in IPSW list
+        use_ota = args.ota or args.beta
+
         if args.latest:
             if args.verbose:
                 print(f"[i] Fetching latest firmware for {identifier}…")
-            fw = ipswapi.get_latest_firmware(identifier, ota=args.ota)
+            fw = ipswapi.get_latest_firmware(identifier, ota=use_ota)
         elif args.ios:
             if args.verbose:
                 print(f"[i] Looking up iOS {args.ios} for {identifier}…")
-            fw = ipswapi.get_firmware_by_version(identifier, args.ios, ota=args.ota)
+            fw = ipswapi.get_firmware_by_version(identifier, args.ios, ota=use_ota)
+            # Beta fallback: if not found in IPSW list, try OTA
+            if fw is None and args.beta and not args.ota:
+                if args.verbose:
+                    print(f"[i] Not found in IPSW list, trying OTA (beta)…")
+                fw = ipswapi.get_firmware_by_version(identifier, args.ios, ota=True)
+                if fw and args.verbose:
+                    print(f"[i] Found in OTA firmware list")
         elif args.buildid:
             if args.verbose:
                 print(f"[i] Looking up build {args.buildid} for {identifier}…")
-            fw = ipswapi.get_firmware_by_buildid(identifier, args.buildid, ota=args.ota)
+            fw = ipswapi.get_firmware_by_buildid(identifier, args.buildid, ota=use_ota)
+            if fw is None and args.beta and not args.ota:
+                if args.verbose:
+                    print(f"[i] Not found in IPSW list, trying OTA (beta)…")
+                fw = ipswapi.get_firmware_by_buildid(identifier, args.buildid, ota=True)
         else:
             parser.error(
                 "Specify a firmware version with -i / --ios, -Z / --buildid, "
-                "or use --latest"
+                "--latest, or provide a direct URL with --url"
             )
 
         if fw is None:
+            hint = " (try --url <ipsw_url> if this is a beta not yet in IPSW.me)" if args.beta else \
+                   " (try --beta if this is a beta firmware, or --url <ipsw_url> for direct URL)"
             print(
                 f"[ERROR] Firmware not found for {identifier} "
-                f"version={args.ios or ''} build={args.buildid or ''}",
+                f"version={args.ios or ''} build={args.buildid or ''}{hint}",
                 file=sys.stderr,
             )
             return 1
