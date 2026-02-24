@@ -354,6 +354,11 @@ def do_check(args, device, firmware_url: str, fw_version: str, fw_buildid: str,
     if args.print_tss_response:
         print(response)
 
+    # Blob save + attestation device + STATUS=69 → firmware IS signed but no ticket
+    # issued without hardware SE bundle.  Return None to distinguish from "not signed".
+    if wants_save and needs_hardware_attestation and not signed and "STATUS=69" in response:
+        return None
+
     if signed:
         blob = tsslib.extract_shsh_blob(response)
         if args.save is not None and blob:
@@ -717,6 +722,13 @@ def main() -> int:
         print(f"\n[+] {fw_version} ({fw_buildid}) IS being signed for "
               f"{device.identifier if device else 'device'} ✓")
         return 0
+    elif signed is None:
+        # STATUS=69: firmware is signed but hardware SE attestation required for blob
+        print(f"\n[!] {fw_version} ({fw_buildid}) IS being signed for "
+              f"{device.identifier if device else 'device'}, "
+              f"but blob cannot be saved without hardware SE attestation (A17 Pro+). "
+              f"Use idevicerestore or futurerestore for actual blob saving.")
+        return 2
     else:
         print(f"\n[-] {fw_version} ({fw_buildid}) is NOT being signed for "
               f"{device.identifier if device else 'device'} ✗")
