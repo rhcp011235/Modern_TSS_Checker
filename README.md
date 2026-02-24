@@ -94,7 +94,8 @@ python tsschecker.py -d iPhone14,2 -i 26.3 \
 | `-m` | `--build-manifest` | Path to a local `BuildManifest.plist` |
 | `-l` | `--latest` | Use the most recent public firmware |
 | `-o` | `--ota` | Check OTA signing instead of full restore (IPSW) |
-| | `--beta` | Request ticket for a beta firmware |
+| | `--beta` | Search OTA/beta firmware list (betas are often OTA-only) |
+| | `--url` | Direct URL to an IPSW or OTA zip (bypasses IPSW.me lookup) |
 
 ### Security / Nonces
 
@@ -145,6 +146,15 @@ python tsschecker.py -d iPhone14,2 -i 26.3 \
 ## Examples
 
 ```
+# Check if a beta version is being signed (searches IPSW + OTA lists)
+python tsschecker.py -d iPhone14,2 -i 18.4 --beta
+
+# List all versions including betas
+python tsschecker.py -d iPhone14,2 --list-versions --beta
+
+# Use a direct IPSW/OTA URL (useful for betas not yet indexed by IPSW.me)
+python tsschecker.py -d iPhone14,2 --url https://updates.cdn-apple.com/...
+
 # Check multiple versions for a device
 python tsschecker.py -d iPhone15,2 --list-versions
 
