@@ -262,38 +262,23 @@ def do_check(args, device, firmware_url: str, fw_version: str, fw_buildid: str,
     # Nonce type
     nonce_kind = devdb.nonce_type(cpid) if cpid else devdb.NONCE_SHA384
 
-    # Attestation mode check — A17 Pro (CPID 0x8130) and newer require hardware
-    # attestation for TSS.  Without a real device-derived nonce/attestation bundle,
-    # Apple's server returns STATUS=69 regardless of what we send.  Fall back to
-    # the IPSW.me signing status which is accurate and requires no hardware.
+    # Attestation mode — RestoreAttestationMode >= 4 means the device requires a
+    # hardware Secure Enclave attestation bundle to receive a blob (STATUS=0).
+    # Without it, Apple returns STATUS=69 for signed firmware and STATUS=94 for
+    # unsigned firmware.  We exploit this: treat STATUS=69 as "signed" for status
+    # checks.  Only actual blob saving requires real hardware attestation.
     attest_mode = mf.get_restore_attestation_mode(identity)
     needs_hardware_attestation = (attest_mode >= 4)
+    wants_save = (args.save is not None and ecid != 0)
 
-    if needs_hardware_attestation and not args.print_tss_request:
-        # Only skip TSS if we're NOT saving blobs (blob save needs real hardware anyway)
-        wants_save = (args.save is not None and ecid != 0)
-        if not wants_save:
-            if fw_signed is not None:
-                if args.verbose:
-                    print(
-                        f"[i] RestoreAttestationMode={attest_mode}: this firmware requires "
-                        f"hardware attestation for direct TSS. "
-                        f"Using cached signing status."
-                    )
-                else:
-                    print(
-                        f"[i] Firmware requires hardware attestation; "
-                        f"using cached signing status."
-                    )
-                return fw_signed
-            else:
-                # No IPSW.me status available (e.g. local manifest) — warn and try TSS
-                print(
-                    f"[!] RestoreAttestationMode={attest_mode}: this chip (A17 Pro+) "
-                    f"requires hardware attestation. Direct TSS will likely return "
-                    f"STATUS=69. Provide a real --apnonce and --ecid for accurate results.",
-                    file=sys.stderr,
-                )
+    # For blob saving with attestation devices, warn the user up front
+    if needs_hardware_attestation and wants_save and not args.print_tss_request:
+        print(
+            f"[!] RestoreAttestationMode={attest_mode}: blob saving requires a "
+            f"hardware SE attestation bundle (A17 Pro+). TSS will return STATUS=69 "
+            f"without a real restore session.",
+            file=sys.stderr,
+        )
 
     # Build nonces if not provided
     if not apnonce:
@@ -347,8 +332,24 @@ def do_check(args, device, firmware_url: str, fw_version: str, fw_buildid: str,
         req.print_request()
         return True
 
+    # For status checks on attestation devices: STATUS=69 means signed (Apple
+    # would issue a ticket with real HW attestation), STATUS=94 means unsigned.
+    treat_69 = needs_hardware_attestation and not wants_save
+
+    if needs_hardware_attestation and not wants_save and args.verbose:
+        print(
+            f"[i] RestoreAttestationMode={attest_mode}: interpreting STATUS=69 as "
+            f"signed (hardware attestation required for actual blob)."
+        )
+
     # Send
-    signed, response = req.send(verbose=args.verbose)
+    signed, response = req.send(verbose=args.verbose, treat_69_as_signed=treat_69)
+
+    # If TSS failed entirely (no response) and we have a cached signing status, use it
+    if not response and fw_signed is not None:
+        if args.verbose:
+            print("[i] TSS unreachable; falling back to cached signing status.")
+        return fw_signed
 
     if args.print_tss_response:
         print(response)
