@@ -215,6 +215,12 @@ def extract_ap_components(
         if is_bb and skip_baseband:
             continue
 
+        # Co-processor components (AVISP1,* and AudioAP1,*) have their own
+        # dedicated ticket request path and must not be included in the regular
+        # AP request.  See extract_copro_components() / get_copro_info().
+        if name.startswith("AVISP1,") or name.startswith("AudioAP1,"):
+            continue
+
         # Savage,* patches are silicon-revision-specific.  Including all
         # variants without knowing the actual revision causes Apple's TSS
         # server to reject the request.  Skip them unless we have real
@@ -301,6 +307,100 @@ def extract_baseband_components(
 
         if "Digest" in comp:
             entry["Digest"] = comp["Digest"]
+        if "PartialDigest" in comp:
+            entry["PartialDigest"] = comp["PartialDigest"]
+
+        result[name] = entry
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Co-processor component extraction (AVISP1 / AudioAP1)
+# ---------------------------------------------------------------------------
+
+# Known co-processor prefixes and their roles.
+#   AVISP1   → Apple Vision Pro / visionOS  (libtatsu PR #6: "bora")
+#   AudioAP1 → HomePod / audioOS            (libtatsu PR #6: "durant")
+COPRO_PREFIXES: List[str] = ["AVISP1", "AudioAP1"]
+
+
+def get_copro_info(identity: dict) -> List[dict]:
+    """
+    Detect which co-processor ticket types are present in this identity.
+
+    Returns a list of dicts:
+        [{"prefix": "AVISP1", "chip_id": int, "board_id": int}, ...]
+
+    chip_id / board_id are read from the BuildIdentity top-level keys
+    "{prefix},ChipID" and "{prefix},BoardID" (0 if absent).
+    Returns an empty list for every standard iPhone/iPad/AppleTV identity.
+    """
+    manifest_components: dict = identity.get("Manifest", {})
+    found: List[dict] = []
+    seen: set = set()
+
+    for name in manifest_components:
+        for prefix in COPRO_PREFIXES:
+            if prefix not in seen and name.startswith(prefix + ","):
+                chip_id  = _parse_int(identity.get(f"{prefix},ChipID",  0))
+                board_id = _parse_int(identity.get(f"{prefix},BoardID", 0))
+                found.append({"prefix": prefix, "chip_id": chip_id, "board_id": board_id})
+                seen.add(prefix)
+                break
+        if len(seen) == len(COPRO_PREFIXES):
+            break
+
+    return found
+
+
+def extract_copro_components(
+    identity: dict,
+    prefix: str,
+    img4: bool = True,
+    conditions: Optional[dict] = None,
+) -> Dict[str, dict]:
+    """
+    Extract co-processor firmware component entries for a TSS request.
+    Port of tss_request_add_bora_tags / tss_request_add_durant_tags in libtatsu
+    (libimobiledevice/libtatsu PR #6).
+
+    Key differences from extract_ap_components():
+      - Only includes entries whose names start with "{prefix},"
+      - Does NOT filter on Personalize (matches C code behaviour)
+      - Adds an empty bytes Digest for Trusted items that have no Digest key
+        (mirrors C: plist_new_data(NULL, 0) for trusted entries without digest)
+    """
+    conds = dict(_DEFAULT_CONDITIONS)
+    conds["ApRequiresImage4"] = img4
+    if conditions:
+        conds.update(conditions)
+
+    pfx = prefix + ","
+    manifest_components: dict = identity.get("Manifest", {})
+    result: Dict[str, dict] = {}
+
+    for name, comp in manifest_components.items():
+        if not isinstance(comp, dict):
+            continue
+        if not name.startswith(pfx):
+            continue
+
+        info  = comp.get("Info", {})
+        rules = info.get("RestoreRequestRules", [])
+        entry: dict = {}
+        entry.update(_eval_rules(rules, conds))
+
+        if "Trusted" in comp:
+            entry["Trusted"] = comp["Trusted"]
+
+        # Mirrors the C code: add empty bytes digest (plist_new_data(NULL, 0))
+        # for Trusted items that have no Digest key in the manifest.
+        if "Digest" in comp:
+            entry["Digest"] = comp["Digest"]
+        elif entry.get("Trusted"):
+            entry["Digest"] = b""
+
         if "PartialDigest" in comp:
             entry["PartialDigest"] = comp["PartialDigest"]
 

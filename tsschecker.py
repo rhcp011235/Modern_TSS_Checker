@@ -39,32 +39,79 @@ def build_parser() -> argparse.ArgumentParser:
         prog="tsschecker",
         description=(
             "Check Apple TSS signing status for iOS/iPadOS/tvOS/watchOS firmware.\n"
-            "Pure-Python rewrite — no native dependencies required."
+            "Pure-Python rewrite — no native dependencies required.\n\n"
+            "Your device ECID is shown in iTunes/Finder (device summary page),\n"
+            "Apple Configurator 2, or via: ideviceinfo -k UniqueChipID"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-EXAMPLES:
-  # Check if iOS 16.7.8 is still signed for iPhone 10,3
-  tsschecker.py -d iPhone10,3 -i 16.7.8
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ SIGNING STATUS CHECKS  (no ECID required)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  # Check all versions for a device
+  # Check the latest firmware for a device
+  tsschecker.py -d iPhone14,2 --latest
+
+  # Check a specific version
+  tsschecker.py -d iPhone14,2 -i 17.5.1
+
+  # Check a specific build ID
+  tsschecker.py -d iPhone14,2 -Z 21F90
+
+  # List all known versions and their signing status
   tsschecker.py -d iPhone14,2 --list-versions
 
-  # Save SHSH blobs (requires real ECID; A12+ also requires --apnonce)
-  tsschecker.py -d iPhone11,8 -i 16.7 -e 0xABCDEF1234567890 -s ./blobs/
+  # Check betas / RC builds
+  tsschecker.py -d iPhone16,1 --latest --beta
 
-  # Use a local BuildManifest.plist
-  tsschecker.py -d iPhone10,3 -m /path/to/BuildManifest.plist -e 0x1234
+  # Check a HomePod, Apple TV, or Apple Watch
+  tsschecker.py -d AudioAccessory6,1 --latest
+  tsschecker.py -d AppleTV14,1 --latest
+  tsschecker.py -d Watch7,3 --latest
 
-  # Check OTA signing status
-  tsschecker.py -d iPhone14,2 --list-versions -o
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ SAVING SHSH2 BLOBS  (ECID required)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-NONCE NOTES:
-  A9 and below: use -g 0xbd34a880be0b53f3 (Chimera/Electra generator)
-                or -g 0x1111111111111111 (unc0ver generator)
-  A10+:         use --apnonce <hex> with the boot nonce from your device.
-                On A12+ the nonce is UID-derived; you must read it directly
-                from the device (e.g. via palera1n, Sideloadly, or irecovery).
+  ECID can be hex (with or without 0x prefix) or decimal:
+    -e 0xAB12CD34EF567890    hex with 0x prefix
+    -e AB12CD34EF567890      plain hex  (same value)
+    -e 10619027045111286     decimal    (same value)
+
+  # Save latest signed blob to current directory
+  tsschecker.py -d iPhone12,1 -e 0xAB12CD34EF567890 --latest -s
+
+  # Save to a specific folder
+  tsschecker.py -d iPhone12,1 -e 0xAB12CD34EF567890 -i 17.5.1 -s ./my_blobs/
+
+  # A9 and older (iPhone 6s / SE 1st gen and below) — use a generator
+  # so the blob is tied to a fixed nonce and reusable with futurerestore
+  tsschecker.py -d iPhone8,1 -e 0xAB12CD34EF567890 --latest -g 0x1111111111111111 -s
+
+  # A10–A11 (iPhone 7 / 8 / X) — also supports generators
+  tsschecker.py -d iPhone10,3 -e 0xAB12CD34EF567890 --latest -g 0xbd34a880be0b53f3 -s
+
+  # A12+ (iPhone XS and newer) — generator required; nonce is UID-derived
+  # Read your ApNonce with: irecovery -q | grep NONC
+  #                     or: palera1n / Sideloadly / ideviceinfo
+  tsschecker.py -d iPhone13,3 -e 0xAB12CD34EF567890 --latest \\
+      --apnonce abcdef0123456789abcdef0123456789abcdef0123456789 -s
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ ADVANCED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Use a direct IPSW or OTA URL (skips IPSW.me lookup)
+  tsschecker.py -d iPhone14,2 --url https://example.com/path/to/fw.ipsw
+
+  # Use a local BuildManifest.plist you already have
+  tsschecker.py -d iPhone14,2 -m /path/to/BuildManifest.plist -e 0xAB12CD34EF567890 -s
+
+  # Print the raw TSS request XML (for debugging)
+  tsschecker.py -d iPhone14,2 --latest --print-tss-request
+
+  # List all known device identifiers
+  tsschecker.py --list-devices
 """,
     )
 
@@ -157,6 +204,9 @@ NONCE NOTES:
 def parse_ecid(ecid_str: str) -> int:
     s = ecid_str.strip()
     if s.lower().startswith("0x"):
+        return int(s, 16)
+    # Plain hex string without 0x prefix (e.g. "000002721F1ACDF6" from iTunes/Finder)
+    if any(c in s.upper() for c in "ABCDEF"):
         return int(s, 16)
     return int(s)
 
@@ -286,7 +336,9 @@ def do_check(args, device, firmware_url: str, fw_version: str, fw_buildid: str,
             apnonce = tsslib.generator_to_nonce(args.generator, nonce_kind)
         else:
             apnonce = tsslib.random_nonce(nonce_kind)
-    if not sepnonce:
+    # SepNonce only for IMG4 devices (A7+ = iPhone 5s+). IMG3 devices have no
+    # Secure Enclave — sending SepNonce causes TSS to return "device isn't eligible".
+    if not sepnonce and img4:
         sepnonce = secrets.token_bytes(20)
 
     # Build TSS request
@@ -303,18 +355,24 @@ def do_check(args, device, firmware_url: str, fw_version: str, fw_buildid: str,
     if isinstance(ubid, bytes):
         req.set_unique_build_id(ubid)
 
+    # For anonymous status checks (ECID=0) always skip baseband — Apple TSS
+    # rejects requests with a random BbSNUM when no real device ECID is
+    # provided, returning STATUS=94 "device isn't eligible".  Baseband is only
+    # meaningful when saving blobs for a real device (ECID != 0).
+    skip_bb_for_anon = (ecid == 0)
+
     if baseband_mode != 2:  # not BB-only
         comps = mf.extract_ap_components(
             identity,
             img4=img4,
-            skip_baseband=(baseband_mode == 1),
+            skip_baseband=(baseband_mode == 1 or skip_bb_for_anon),
             requested_components=(
                 requested_components.split(",") if requested_components else None
             ),
         )
         req.add_ap_components(comps)
 
-    if baseband_mode != 1:  # not no-BB
+    if baseband_mode != 1 and not skip_bb_for_anon and img4:  # not no-BB, not anonymous, IMG4 only
         bb_comps = mf.extract_baseband_components(identity, img4=img4)
         if bb_comps:
             bb_info = devdb.get_baseband_info(device.identifier) if device else None
@@ -327,6 +385,26 @@ def do_check(args, device, firmware_url: str, fw_version: str, fw_buildid: str,
                 req.add_baseband_components(bb_comps, bbgcid=bbgcid, bbsnum=bbsnum)
             elif args.verbose:
                 print("[i] No baseband info for this device — skipping baseband")
+
+    # Co-processor tickets: AVISP1 (Vision Pro / visionOS) and
+    # AudioAP1 (HomePod / audioOS).  Detected automatically from the
+    # BuildManifest — no extra flags or user input required.
+    # Port of tss_request_add_bora_tags / tss_request_add_durant_tags in
+    # libtatsu (libimobiledevice/libtatsu PR #6).
+    for copro in mf.get_copro_info(identity):
+        copro_comps = mf.extract_copro_components(identity, copro["prefix"], img4=img4)
+        if copro_comps:
+            if args.verbose:
+                print(f"[i] Adding {copro['prefix']} co-processor ticket "
+                      f"(chip_id=0x{copro['chip_id']:X}, board_id=0x{copro['board_id']:X})")
+            req.add_copro_ticket(
+                copro_comps,
+                prefix=copro["prefix"],
+                chip_id=copro["chip_id"],
+                board_id=copro["board_id"],
+                ecid=ecid,
+                nonce=secrets.token_bytes(20),
+            )
 
     if args.print_tss_request:
         req.print_request()
@@ -384,8 +462,41 @@ def do_check(args, device, firmware_url: str, fw_version: str, fw_buildid: str,
 # Main
 # ---------------------------------------------------------------------------
 
+QUICK_HELP = """\
+tsschecker — check Apple TSS signing status / save SHSH2 blobs
+
+QUICK START:
+
+  Check whether the latest firmware is being signed:
+    tsschecker.py -d iPhone14,2 --latest
+
+  Check a specific version:
+    tsschecker.py -d iPhone14,2 -i 17.5.1
+
+  List all versions + signing status for a device:
+    tsschecker.py -d iPhone14,2 --list-versions
+
+  Save a blob (ECID is on your device's page in iTunes or Finder):
+    tsschecker.py -d iPhone14,2 --latest -e 0xAABBCCDDEEFF0011 -s ./blobs/
+
+  Save with a generator (A9 and older — makes the blob reusable):
+    tsschecker.py -d iPhone8,4 --latest -e 0xAABBCCDDEEFF0011 -g 0x1111111111111111 -s ./blobs/
+
+  Check a HomePod / Apple TV / Apple Watch:
+    tsschecker.py -d AudioAccessory6,1 --latest
+    tsschecker.py -d AppleTV14,1 --latest
+    tsschecker.py -d Watch7,3 --latest
+
+Full option reference:  tsschecker.py --help
+"""
+
+
 def main() -> int:
     parser = build_parser()
+    # Show friendly quick-start when invoked with no arguments
+    if len(sys.argv) == 1:
+        print(QUICK_HELP)
+        return 0
     args = parser.parse_args()
 
     # ------------------------------------------------------------------
@@ -663,20 +774,45 @@ def main() -> int:
                     print(f"[ERROR] Could not fetch BuildManifest: {exc}", file=sys.stderr)
                     return 1
             else:
-                # OTA-only build (.aea encrypted) — BuildManifest is inaccessible
-                # Fall back to appledb.dev signing status as the oracle
-                print(
-                    f"[i] OTA-only{beta_note}: AEA-encrypted OTA, BuildManifest not accessible. "
-                    f"Reporting appledb.dev signing status."
-                )
-                if args.verbose and afw.url:
-                    print(f"[i] OTA URL: {afw.url}")
-                signed = afw.signed
-                if signed:
-                    print(f"\n[+] {fw_version} ({fw_buildid}) IS being signed for {identifier} ✓")
+                # OTA-only build — .aea (iOS incremental) or .zip (HomePod/tvOS/watchOS full OTA)
+                # .zip OTAs contain AssetData/boot/BuildManifest.plist — FragmentZip can read it.
+                ota_url = afw.url
+                is_aea  = (not ota_url) or ota_url.lower().endswith(".aea")
+
+                if ota_url and not is_aea:
+                    # .zip full OTA — attempt real TSS check via FragmentZip
+                    print(f"[i] OTA source is .zip — fetching BuildManifest…")
+                    if args.verbose:
+                        print(f"[i] OTA URL: {ota_url}")
+                    try:
+                        raw_manifest = ipswapi.download_build_manifest(ota_url)
+                        manifest_data = plistlib.loads(raw_manifest)
+                        firmware_url  = ota_url
+                        # fall through to the common TSS check below
+                    except Exception as exc:
+                        print(f"[WARN] Could not fetch BuildManifest from OTA: {exc}",
+                              file=sys.stderr)
+                        print(f"[i] Falling back to appledb.dev signing status.")
+                        signed = afw.signed
+                        if signed:
+                            print(f"\n[+] {fw_version} ({fw_buildid}) IS being signed for {identifier} ✓")
+                        else:
+                            print(f"\n[-] {fw_version} ({fw_buildid}) is NOT being signed for {identifier} ✗")
+                        return 0 if signed else 1
                 else:
-                    print(f"\n[-] {fw_version} ({fw_buildid}) is NOT being signed for {identifier} ✗")
-                return 0 if signed else 1
+                    # .aea encrypted — BuildManifest is inaccessible; use appledb.dev as oracle
+                    print(
+                        f"[i] OTA-only{beta_note}: AEA-encrypted OTA, BuildManifest not accessible. "
+                        f"Reporting appledb.dev signing status."
+                    )
+                    if args.verbose and ota_url:
+                        print(f"[i] OTA URL: {ota_url}")
+                    signed = afw.signed
+                    if signed:
+                        print(f"\n[+] {fw_version} ({fw_buildid}) IS being signed for {identifier} ✓")
+                    else:
+                        print(f"\n[-] {fw_version} ({fw_buildid}) is NOT being signed for {identifier} ✗")
+                    return 0 if signed else 1
 
         else:
             # Found in IPSW.me — download BuildManifest normally

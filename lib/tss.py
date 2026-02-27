@@ -132,8 +132,7 @@ class TSSRequest:
         self._plist["ApBoardID"]        = self._bdid
         self._plist["ApECID"]           = self._ecid
         self._plist["ApSecurityDomain"] = 1
-        self._plist["ApSecurityMode"]   = True
-        self._plist["UID_MODE"]         = False
+        # ApSecurityMode / UID_MODE are IMG4-only (A7+); added by set_img4()
 
     # -----------------------------------------------------------------------
     # Nonce
@@ -154,6 +153,10 @@ class TSSRequest:
     def set_img4(self, img4: bool = True) -> None:
         if img4:
             self._plist["@ApImg4Ticket"] = True
+            # These fields are IMG4-only (A7+). Sending them for IMG3 devices
+            # causes TSS to return STATUS=94 "device isn't eligible".
+            self._plist["ApSecurityMode"] = True
+            self._plist["UID_MODE"]       = False
         else:
             self._plist["@APTicket"] = True
 
@@ -210,6 +213,56 @@ class TSSRequest:
 
         if bb_entry:
             self._plist["BasebandFirmware"] = bb_entry
+
+    # -----------------------------------------------------------------------
+    # Co-processor ticket components (AVISP1 / AudioAP1)
+    # -----------------------------------------------------------------------
+
+    def add_copro_ticket(
+        self,
+        components: Dict[str, Any],
+        prefix: str,
+        chip_id: int,
+        board_id: int,
+        ecid: int,
+        nonce: bytes,
+    ) -> None:
+        """
+        Add co-processor ticket tags to the TSS request.
+        Port of tss_request_add_bora_tags / tss_request_add_durant_tags in
+        libtatsu (libimobiledevice/libtatsu PR #6).
+
+        Handles both known co-processor types via a shared prefix parameter:
+          "AVISP1"   → Apple Vision Pro / visionOS  (bora)
+          "AudioAP1" → HomePod / audioOS            (durant)
+
+        chip_id / board_id: from the BuildIdentity top-level (0 if not present)
+        ecid:    0 for anonymous status checks; real ECID for blob saves
+        nonce:   random bytes (20 bytes is sufficient)
+
+        Note: {prefix},FdrRootCaDigest (AVISP1 only) is omitted — it requires
+        hardware device info not available without a live device connection.
+        AudioAP1 does not use FdrRootCaDigest.
+        """
+        # Ticket request flags — @BBTicket signals a secondary co-processor ticket
+        self._plist["@BBTicket"]           = True
+        self._plist[f"@{prefix},Ticket"]   = True
+
+        # Co-processor device identity
+        if chip_id:
+            self._plist[f"{prefix},ChipID"]  = chip_id
+        if board_id:
+            self._plist[f"{prefix},BoardID"] = board_id
+        self._plist[f"{prefix},ECID"]           = ecid
+        self._plist[f"{prefix},Nonce"]          = nonce
+        self._plist[f"{prefix},ProductionMode"] = True
+        self._plist[f"{prefix},SecurityDomain"] = 1
+        self._plist[f"{prefix},SecurityMode"]   = True
+
+        # Co-processor firmware component entries
+        for name, entry in components.items():
+            if isinstance(entry, (dict, bytes)):
+                self._plist[name] = entry
 
     # -----------------------------------------------------------------------
     # Plist serialisation

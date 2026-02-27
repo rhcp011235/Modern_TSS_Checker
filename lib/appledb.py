@@ -18,12 +18,29 @@ import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from urllib.parse import quote
 from typing import Optional, List
 
 APPLEDB_BASE = "https://api.appledb.dev"
 CACHE_DIR = Path(os.path.expanduser("~/.cache/tsschecker"))
 CACHE_TTL_INDEX = 3600 * 2   # 2 hours (index changes as new betas land)
 CACHE_TTL_ENTRY = 3600 * 4   # 4 hours per build entry
+
+
+# ---------------------------------------------------------------------------
+# OS type detection
+# ---------------------------------------------------------------------------
+
+def _os_type_for_identifier(identifier: str) -> str:
+    """
+    Map a device identifier prefix to the appledb.dev osStr used in index/entry URLs.
+    Mirrors the PHP _adb_os_type() function in appledb_api.php.
+    """
+    if identifier.startswith("RealityDevice"):  return "visionOS"
+    if identifier.startswith("AudioAccessory"): return "HomePod Software"
+    if identifier.startswith("AppleTV"):        return "tvOS"
+    if identifier.startswith("Watch"):          return "watchOS"
+    return "iOS"
 
 
 # Maps iOS major marketing version → 2-digit build-ID prefix.
@@ -77,7 +94,7 @@ class AppleDBFirmware:
                 self.url_type = "ipsw"
                 return
 
-        # 2. Full OTA (no prerequisiteBuild) — .aea encrypted; signing status only
+        # 2. Full OTA (no prerequisiteBuild) — .aea (iOS) or .zip (HomePod/tvOS/watchOS)
         for src in sources:
             if src.get("type") != "ota":
                 continue
@@ -142,11 +159,11 @@ def _save_cache(key: str, value) -> None:
 # Low-level fetchers
 # ---------------------------------------------------------------------------
 
-def _fetch_entry(build_key: str) -> Optional[dict]:
+def _fetch_entry(os_type: str, buildid: str) -> Optional[dict]:
     """Fetch one build entry from appledb.dev.  Returns None on failure."""
     try:
         resp = requests.get(
-            f"{APPLEDB_BASE}/ios/{build_key}.json", timeout=15
+            f"{APPLEDB_BASE}/ios/{quote(os_type)};{quote(buildid)}.json", timeout=15
         )
         if resp.status_code == 200:
             return resp.json()
@@ -155,16 +172,17 @@ def _fetch_entry(build_key: str) -> Optional[dict]:
     return None
 
 
-def _get_index() -> List[str]:
-    """Fetch (and cache) the list of all iOS build keys from appledb.dev."""
-    cached = _load_cache("ios_index", ttl=CACHE_TTL_INDEX)
+def _get_index(os_type: str = "iOS") -> List[str]:
+    """Fetch (and cache) the build key index for a given OS type from appledb.dev."""
+    safe = os_type.replace(" ", "_")
+    cached = _load_cache(f"index_{safe}", ttl=CACHE_TTL_INDEX)
     if cached:
         return cached
 
-    resp = requests.get(f"{APPLEDB_BASE}/ios/iOS/index.json", timeout=20)
+    resp = requests.get(f"{APPLEDB_BASE}/ios/{quote(os_type)}/index.json", timeout=20)
     resp.raise_for_status()
     data = resp.json()
-    _save_cache("ios_index", data)
+    _save_cache(f"index_{safe}", data)
     return data
 
 
@@ -202,18 +220,22 @@ def get_firmware_by_buildid(
     """
     Look up a specific build ID in appledb.dev.
 
+    Automatically selects the correct OS type from the device identifier
+    (visionOS, HomePod Software, tvOS, watchOS, or iOS).
     Returns None if the build is not in the appledb database.
     """
+    os_type = _os_type_for_identifier(identifier) if identifier else "iOS"
+    safe_os = os_type.replace(" ", "_")
     safe_id = buildid.replace("/", "_")
-    cached = _load_cache(f"build_{safe_id}")
+    cached = _load_cache(f"build_{safe_os}_{safe_id}")
     if cached is not None:
         return AppleDBFirmware(buildid, cached, identifier)
 
-    entry = _fetch_entry(f"iOS;{buildid}")
+    entry = _fetch_entry(os_type, buildid)
     if entry is None:
         return None
 
-    _save_cache(f"build_{safe_id}", entry)
+    _save_cache(f"build_{safe_os}_{safe_id}", entry)
     return AppleDBFirmware(buildid, entry, identifier)
 
 
@@ -232,13 +254,17 @@ def search_by_version(
 
     Returns a list sorted newest-first.  Empty list if nothing found.
     """
-    cache_key = f"search_{version}_{identifier}"
+    os_type = _os_type_for_identifier(identifier) if identifier else "iOS"
+    safe_os = os_type.replace(" ", "_")
+
+    cache_key = f"search_{safe_os}_{version}_{identifier}"
     cached_entries = _load_cache(cache_key, ttl=CACHE_TTL_INDEX)
     if cached_entries is not None:
         return [AppleDBFirmware(bid, entry, identifier)
                 for bid, entry in cached_entries]
 
-    # Infer build prefix from the iOS major version number
+    # Infer build prefix from the major version number.
+    # The build prefix scheme is shared across all OS types (22 = 18.x, 23 = 26.x).
     if build_prefix is None:
         try:
             major = int(version.split(".")[0])
@@ -246,19 +272,20 @@ def search_by_version(
         except (ValueError, IndexError):
             pass
 
-    index = _get_index()
+    index = _get_index(os_type)
+    prefix_str = os_type + ";"  # e.g. "HomePod Software;" or "iOS;"
 
     # Filter index to plausible candidates
     candidates: List[str] = []
     for key in index:
-        if not key.startswith("iOS;"):
+        if not key.startswith(prefix_str):
             continue
-        build_id = key[len("iOS;"):]
+        build_id = key[len(prefix_str):]
         if "sim" in build_id or "SDK" in build_id:
             continue
         if build_prefix and not build_id.startswith(build_prefix):
             continue
-        candidates.append(key)
+        candidates.append(build_id)
 
     if not candidates:
         return []
@@ -266,10 +293,9 @@ def search_by_version(
     # Concurrently fetch all candidates and filter by version + device
     matched: list = []
     with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = {pool.submit(_fetch_entry, key): key for key in candidates}
+        futures = {pool.submit(_fetch_entry, os_type, bid): bid for bid in candidates}
         for future in as_completed(futures):
-            key = futures[future]
-            build_id = key[len("iOS;"):]
+            build_id = futures[future]
             entry = future.result()
             if entry is None:
                 continue

@@ -42,5 +42,15 @@ BuildManifest.plist
 *.swo
 .DS_Store
 
+# PyInstaller artifacts (build/ and dist/ already covered above)
+*.spec
+
+# Screenshots / scratch files
+*.jpg
+*.png
+
 # Claude Code project files
 .claude/
+
+# Web UI (separate private repo)
+web/
