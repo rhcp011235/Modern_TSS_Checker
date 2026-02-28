@@ -128,41 +128,49 @@ jobs:
           SHORT="${GITHUB_SHA:0:7}"
           DATE="$(date -u +'%Y-%m-%d')"
 
+          # Write release notes to a file to avoid YAML/shell quoting issues
+          cat > release-notes.md << 'NOTES'
+          ## TSS Checker
+
+          Automatically built from the latest commit on `main`.
+
+          ### Downloads
+
+          | Platform | File | Notes |
+          |----------|------|-------|
+          | macOS (Apple Silicon + Intel) | `TSS_Checker_macOS_universal.zip` | Universal binary — works on both M-series and Intel Macs |
+          | Windows | `TSS_Checker_Windows.exe` | Windows 10/11 x86_64 |
+          | Linux | `TSS_Checker_Linux_x86_64` | x86_64, built on Ubuntu 22.04 (glibc 2.35+) |
+
+          ---
+
+          ### macOS — first launch
+
+          macOS will block unsigned apps from the internet. To open:
+
+          1. Unzip, then double-click `TSS Checker.app`
+          2. If blocked: open **System Settings → Privacy & Security** and click **Open Anyway**
+             (or right-click the .app → **Open**)
+
+          ### Linux
+
+          ```bash
+          chmod +x TSS_Checker_Linux_x86_64
+          ./TSS_Checker_Linux_x86_64
+          ```
+
+          ---
+
+          No installation needed — Python and all dependencies are bundled inside.
+          NOTES
+
+          # Inject the commit SHA and date (safe substitution outside the heredoc)
+          sed -i "s|latest commit on \`main\`|commit [\`${SHORT}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) on ${DATE}|" release-notes.md
+
           gh release create latest \
             --latest \
             --title "Latest Build — ${DATE} (${SHORT})" \
-            --notes "## TSS Checker
-
-Automatically built from commit [\`${SHORT}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) on ${DATE}.
-
-### Downloads
-
-| Platform | File | Notes |
-|----------|------|-------|
-| macOS (Apple Silicon + Intel) | \`TSS_Checker_macOS_universal.zip\` | Universal binary — works on both M-series and Intel Macs |
-| Windows | \`TSS_Checker_Windows.exe\` | Windows 10/11 x86_64 |
-| Linux | \`TSS_Checker_Linux_x86_64\` | x86_64, built on Ubuntu 22.04 (glibc 2.35+) |
-
----
-
-### macOS — first launch
-
-macOS will block unsigned apps from the internet. To open:
-
-1. Unzip, then double-click \`TSS Checker.app\`
-2. If blocked: open **System Settings → Privacy & Security** and click **Open Anyway**
-   (or right-click the .app → **Open**)
-
-### Linux
-
-\`\`\`bash
-chmod +x TSS_Checker_Linux_x86_64
-./TSS_Checker_Linux_x86_64
-\`\`\`
-
----
-
-Only dependency is **Python + requests** — already bundled, no install needed." \
+            --notes-file release-notes.md \
             "artifacts/macos/TSS_Checker_macOS_universal.zip" \
             "artifacts/windows/TSS_Checker_Windows.exe" \
             "artifacts/linux/TSS_Checker_Linux_x86_64"
